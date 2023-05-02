@@ -64,13 +64,58 @@ class AddArticleTool(BaseTool):
     def _arun(self, query: str) -> str:
         raise NotImplementedError("AddArticleTool does not support async")
 
-class Arxiver:
-    search_description = (
+
+class ArxivDBTool(BaseTool):
+    name = "Search ArXiv DB"
+    description = (
         "Use this tool when searching for scientific research information "
         "from our prebuilt ArXiv papers database. This should be the first "
         "option when looking for information. When recieving information from "
         "this tool you MUST always include all sources of information."
     )
+    memory: Any = None
+    retriever: Any = None
+
+    def _run(self, inputs:  Union[Dict[str, Any], Any], return_only_outputs: bool = True) -> Dict[str, Any]:
+        """Custom search function to be used for ArXiv retrieval tools. Modifies the
+        typical langchain retrieval function by adding the sources to the answer.
+        
+        :params:
+            inputs: Union[Dict[str, Any], Any] - inputs to the search function in
+                the form of a dictionary like {'question': 'some question'}
+            return_only_outputs: bool - whether to return only the outputs or the
+                entire dictionary of inputs and outputs
+        :returns:
+            outputs: Dict[str, Any] - outputs from the search function in the form of
+                a dictionary like {'answer': 'some answer', 'sources': 'some sources'}
+        """
+        inputs = self.retriever.prep_inputs(inputs)
+        self.retriever.callback_manager.on_chain_start(
+            {"name": self.retriever.__class__.__name__},
+            inputs,
+            verbose=self.retriever.verbose,
+        )
+        try:
+            outputs = self.retriever._call(inputs)
+            # add the sources to the 'answer' value
+            outputs['answer'] = outputs['answer'].replace('\n', ' ') + ' - sources: ' + outputs['sources']
+        except (KeyboardInterrupt, Exception) as e:
+            self.retriever.callback_manager.on_chain_error(e, verbose=self.retriever.verbose)
+            raise e
+        self.retriever.callback_manager.on_chain_end(outputs, verbose=self.retriever.verbose)
+        return self.retriever.prep_outputs(inputs, outputs, return_only_outputs)
+
+    def _arun(self, query: str) -> str:
+        raise NotImplementedError("ArxivDBTool does not support async")        
+
+
+class Arxiver:
+    # search_description = (
+    #     "Use this tool when searching for scientific research information "
+    #     "from our prebuilt ArXiv papers database. This should be the first "
+    #     "option when looking for information. When recieving information from "
+    #     "this tool you MUST always include all sources of information."
+    # )
     sys_msg = (
         "You are an expert summarizer and deliverer of technical information. "
         "Yet, the reason you are so intelligent is that you make complex "
@@ -160,11 +205,8 @@ class Arxiver:
             retriever=self.vectordb.as_retriever()
         )
         # initialize search tool
-        arxiv_db_tool = langchain.agents.Tool(
-            func=self._search_arxiv_db,
-            description=self.search_description,
-            name="Search ArXiv DB"
-        )
+        arxiv_db_tool = ArxivDBTool()
+        arxiv_db_tool.retriever = self.retriever
         # append to tools list
         self.tools.append(arxiv_db_tool)
         # initialize add article tool
@@ -196,69 +238,3 @@ class Arxiver:
             tools=self.tools
         )
         self.agent.agent.llm_chain.prompt = prompt
-
-    def _add_article_to_db(
-        self,
-        inputs: Union[Dict[str, Any], Any],
-        return_only_outputs: bool = False
-    ) -> Dict[str, Any]:
-        """Function to be used for adding articles to the ArXiv database it expects
-        an arXiv ID as input and will add the article to the database.
-        """
-        arxiv_doi = inputs['arxiv_doi']
-        # get single arxiv object
-        paper = Arxiv(arxiv_doi)
-        # load the paper
-        paper.load()
-        # get paper metadata
-        paper_metadata = paper.get_meta()
-        # chunk into smaller parts
-        paper.chunker()
-        # now add to the database
-        ids = []
-        texts = []
-        metadatas = []
-        for record in paper.dataset:
-            record = {**record, **paper_metadata}
-            ids.append(f"{record['id']}-{record['chunk-id']}")
-            texts.append(record['chunk'])
-            for feature in ['id', 'chunk-id', 'summary', 'authors', 'comment', 'categories', 'journal_ref', 'references', 'doi', 'chunk']:
-                record.pop(feature)
-            metadatas.append(record)
-        # add to the database
-        self.memory.add(texts, ids=ids, metadata=metadatas)
-        return {'answer': f"Added {arxiv_doi} to my memory. It is now accessible via the Search Arxiv DB tool."}
-
-
-    def _search_arxiv_db(
-        self,
-        inputs: Union[Dict[str, Any], Any],
-        return_only_outputs: bool = False
-    ) -> Dict[str, Any]:
-        """Custom search function to be used for ArXiv retrieval tools. Modifies the
-        typical langchain retrieval function by adding the sources to the answer.
-        
-        :params:
-            inputs: Union[Dict[str, Any], Any] - inputs to the search function in
-                the form of a dictionary like {'question': 'some question'}
-            return_only_outputs: bool - whether to return only the outputs or the
-                entire dictionary of inputs and outputs
-        :returns:
-            outputs: Dict[str, Any] - outputs from the search function in the form of
-                a dictionary like {'answer': 'some answer', 'sources': 'some sources'}
-        """
-        inputs = self.retriever.prep_inputs(inputs)
-        self.retriever.callback_manager.on_chain_start(
-            {"name": self.retriever.__class__.__name__},
-            inputs,
-            verbose=self.retriever.verbose,
-        )
-        try:
-            outputs = self.retriever._call(inputs)
-            # add the sources to the 'answer' value
-            outputs['answer'] = outputs['answer'].replace('\n', ' ') + ' - sources: ' + outputs['sources']
-        except (KeyboardInterrupt, Exception) as e:
-            self.retriever.callback_manager.on_chain_error(e, verbose=self.retriever.verbose)
-            raise e
-        self.retriever.callback_manager.on_chain_end(outputs, verbose=self.retriever.verbose)
-        return self.retriever.prep_outputs(inputs, outputs, return_only_outputs)
