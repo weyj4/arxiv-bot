@@ -11,7 +11,7 @@ packages = [
 
 [tool.poetry.dependencies]
 python = ">=3.8.1,<4.0"
-langchain = "^0.0.141"
+langchain = "==0.0.141"
 arxiv = "^1.4.3"
 pypdf2 = "^3.0.1"
 openai = "^0.27.4"
@@ -21,6 +21,9 @@ transformers = "^4.26.1"
 tqdm = "^4.64.1"
 pinecone-text = "^0.4.2"
 
+
+[tool.poetry.group.dev.dependencies]
+ipykernel = "^6.22.0"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]
