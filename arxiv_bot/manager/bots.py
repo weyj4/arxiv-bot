@@ -73,7 +73,6 @@ class ArxivDBTool(BaseTool):
         "option when looking for information. When recieving information from "
         "this tool you MUST always include all sources of information."
     )
-    memory: Any = None
     retriever: Any = None
 
     def _run(self, inputs:  Union[Dict[str, Any], Any], return_only_outputs: bool = True) -> Dict[str, Any]:
@@ -110,12 +109,6 @@ class ArxivDBTool(BaseTool):
 
 
 class Arxiver:
-    # search_description = (
-    #     "Use this tool when searching for scientific research information "
-    #     "from our prebuilt ArXiv papers database. This should be the first "
-    #     "option when looking for information. When recieving information from "
-    #     "this tool you MUST always include all sources of information."
-    # )
     sys_msg = (
         "You are an expert summarizer and deliverer of technical information. "
         "Yet, the reason you are so intelligent is that you make complex "
@@ -145,6 +138,7 @@ class Arxiver:
             pinecone_environment=pinecone_environment
         )
         # initialize the chatbot
+        self._init_tools()
         self._init_chatbot(verbose=verbose)
         # initialize the extraction tooling
         self._init_splitter()
@@ -204,15 +198,18 @@ class Arxiver:
             chain_type='stuff',
             retriever=self.vectordb.as_retriever()
         )
+
+    def _init_tools(
+        self
+    ):
         # initialize search tool
         arxiv_db_tool = ArxivDBTool()
         arxiv_db_tool.retriever = self.retriever
-        # append to tools list
-        self.tools.append(arxiv_db_tool)
         # initialize add article tool
         article_add_tool = AddArticleTool()
         article_add_tool.memory = self.memory
         # append to tools list
+        self.tools.append(arxiv_db_tool)
         self.tools.append(article_add_tool)
 
     def _init_chatbot(self, verbose: bool = False):
