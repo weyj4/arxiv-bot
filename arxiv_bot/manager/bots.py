@@ -10,12 +10,19 @@ from langchain.chains.conversation.memory import ConversationBufferWindowMemory
 from arxiv_bot import templates
 from arxiv_bot.knowledge_base.database import Pinecone
 from arxiv_bot.knowledge_base.constructors import Arxiv, init_extractor, get_paper_id
+from arxiv_bot.knowledge_base.constructors import ArxivGraphScraper
 
 paper_id_re = re.compile(r'(\d{4}\.\d{4,6})')
 
 class AddArticleTool(BaseTool):
     name = "Add to ArXiv DB"
-    description = "use this tool to add a new paper to the ArXiv DB. If human provides ArXiv ID like 1012.1313 pass this to the tool. Otherwise try and use the human's query."
+    description = (
+        "use this tool to add a new paper to the ArXiv DB. If human "
+        "provides ArXiv ID like 1012.1313 and does not mention references "
+        "or building a graph, pass this to the tool. If the human specifies "
+        "building a graph with references, use the ArxivGraphScraperTool "
+        "instead. Otherwise try and use the human's query."
+    )
     memory: Any = None
 
     def _run(self, query: str) -> str:
@@ -64,13 +71,89 @@ class AddArticleTool(BaseTool):
     def _arun(self, query: str) -> str:
         raise NotImplementedError("AddArticleTool does not support async")
 
-class Arxiver:
-    search_description = (
+
+class ArxivDBTool(BaseTool):
+    name = "Search ArXiv DB"
+    description = (
         "Use this tool when searching for scientific research information "
         "from our prebuilt ArXiv papers database. This should be the first "
-        "option when looking for information. When recieving information from "
-        "this tool you MUST always include all sources of information."
+        "option when looking for information. "
+        "When receiving information from this tool you MUST always include all sources of information."
     )
+    # description = "don't use this tool."
+    retriever: Any = None
+
+    def _run(self, inputs:  Union[Dict[str, Any], Any], return_only_outputs: bool = True) -> Dict[str, Any]:
+        """Custom search function to be used for ArXiv retrieval tools. Modifies the
+        typical langchain retrieval function by adding the sources to the answer.
+        
+        :params:
+            inputs: Union[Dict[str, Any], Any] - inputs to the search function in
+                the form of a dictionary like {'question': 'some question'}
+            return_only_outputs: bool - whether to return only the outputs or the
+                entire dictionary of inputs and outputs
+        :returns:
+            outputs: Dict[str, Any] - outputs from the search function in the form of
+                a dictionary like {'answer': 'some answer', 'sources': 'some sources'}
+        """
+        inputs = self.retriever.prep_inputs(inputs)
+        self.retriever.callback_manager.on_chain_start(
+            {"name": self.retriever.__class__.__name__},
+            inputs,
+            verbose=self.retriever.verbose,
+        )
+        try:
+            outputs = self.retriever._call(inputs)
+            # add the sources to the 'answer' value
+            outputs['answer'] = outputs['answer'].replace('\n', ' ') + ' - sources: ' + outputs['sources']
+        except (KeyboardInterrupt, Exception) as e:
+            self.retriever.callback_manager.on_chain_error(e, verbose=self.retriever.verbose)
+            raise e
+        self.retriever.callback_manager.on_chain_end(outputs, verbose=self.retriever.verbose)
+        return self.retriever.prep_outputs(inputs, outputs, return_only_outputs)
+
+    def _arun(self, query: str) -> str:
+        raise NotImplementedError("ArxivDBTool does not support async")        
+    
+
+class ArxivGraphScraperTool(BaseTool):
+    name = "Create Graph from ArXiv Paper"
+    description = (
+        "Use this tool to create a graph of a paper's references and "
+        "download chunks. Use this tool if the human says 'create a graph' "
+        "or 'download chunks.'"
+    )
+    description = "Use this tool if the human says 'Create a graph' and passes an ArXiv paper with an ID like 1706.03762"
+    memory: Any = None
+    extractor: Any = None
+    text_splitter: Any = None
+    levels: int = 3
+    save_location: str = 'chunks'
+
+    def _run(self, query: str) -> str:
+        # """Function to be used for adding articles to the ArXiv database it expects
+        # an arXiv ID as input and will add the article plus its references to the database.
+        # """
+        try:
+            ags = ags = ArxivGraphScraper(
+                paper_id=query,
+                memory=self.memory,
+                extractor=self.extractor,
+                text_splitter=self.text_splitter,
+                levels=self.levels,
+                save_location=self.save_location,
+                verbose=True
+            )
+            ags.create_graph()
+        except:
+            pass
+        return f"Added {query} and its references to the chunks directory."
+
+    def _arun(self, query: str) -> str:
+        raise NotImplementedError("ArxivGraphScraperTool does not support async")
+
+
+class Arxiver:
     sys_msg = (
         "You are an expert summarizer and deliverer of technical information. "
         "Yet, the reason you are so intelligent is that you make complex "
@@ -99,10 +182,11 @@ class Arxiver:
             pinecone_api_key=pinecone_api_key,
             pinecone_environment=pinecone_environment
         )
+        self._init_splitter()
         # initialize the chatbot
+        self._init_tools()
         self._init_chatbot(verbose=verbose)
         # initialize the extraction tooling
-        self._init_splitter()
 
     def __call__(self, text: str, detailed: bool = False) -> dict:
         response = self.agent(text)
@@ -159,19 +243,25 @@ class Arxiver:
             chain_type='stuff',
             retriever=self.vectordb.as_retriever()
         )
+
+    def _init_tools(
+        self
+    ):
         # initialize search tool
-        arxiv_db_tool = langchain.agents.Tool(
-            func=self._search_arxiv_db,
-            description=self.search_description,
-            name="Search ArXiv DB"
-        )
-        # append to tools list
-        self.tools.append(arxiv_db_tool)
+        arxiv_db_tool = ArxivDBTool()
+        arxiv_db_tool.retriever = self.retriever
         # initialize add article tool
         article_add_tool = AddArticleTool()
         article_add_tool.memory = self.memory
+        # initialize graph scraper tool
+        ags = ArxivGraphScraperTool()
+        ags.memory = self.memory
+        ags.extractor = self.extractor
+        ags.text_splitter = self.text_splitter
         # append to tools list
+        self.tools.append(arxiv_db_tool)
         self.tools.append(article_add_tool)
+        self.tools.append(ags)
 
     def _init_chatbot(self, verbose: bool = False):
         # initialize conversational memory
@@ -196,69 +286,3 @@ class Arxiver:
             tools=self.tools
         )
         self.agent.agent.llm_chain.prompt = prompt
-
-    def _add_article_to_db(
-        self,
-        inputs: Union[Dict[str, Any], Any],
-        return_only_outputs: bool = False
-    ) -> Dict[str, Any]:
-        """Function to be used for adding articles to the ArXiv database it expects
-        an arXiv ID as input and will add the article to the database.
-        """
-        arxiv_doi = inputs['arxiv_doi']
-        # get single arxiv object
-        paper = Arxiv(arxiv_doi)
-        # load the paper
-        paper.load()
-        # get paper metadata
-        paper_metadata = paper.get_meta()
-        # chunk into smaller parts
-        paper.chunker()
-        # now add to the database
-        ids = []
-        texts = []
-        metadatas = []
-        for record in paper.dataset:
-            record = {**record, **paper_metadata}
-            ids.append(f"{record['id']}-{record['chunk-id']}")
-            texts.append(record['chunk'])
-            for feature in ['id', 'chunk-id', 'summary', 'authors', 'comment', 'categories', 'journal_ref', 'references', 'doi', 'chunk']:
-                record.pop(feature)
-            metadatas.append(record)
-        # add to the database
-        self.memory.add(texts, ids=ids, metadata=metadatas)
-        return {'answer': f"Added {arxiv_doi} to my memory. It is now accessible via the Search Arxiv DB tool."}
-
-
-    def _search_arxiv_db(
-        self,
-        inputs: Union[Dict[str, Any], Any],
-        return_only_outputs: bool = False
-    ) -> Dict[str, Any]:
-        """Custom search function to be used for ArXiv retrieval tools. Modifies the
-        typical langchain retrieval function by adding the sources to the answer.
-        
-        :params:
-            inputs: Union[Dict[str, Any], Any] - inputs to the search function in
-                the form of a dictionary like {'question': 'some question'}
-            return_only_outputs: bool - whether to return only the outputs or the
-                entire dictionary of inputs and outputs
-        :returns:
-            outputs: Dict[str, Any] - outputs from the search function in the form of
-                a dictionary like {'answer': 'some answer', 'sources': 'some sources'}
-        """
-        inputs = self.retriever.prep_inputs(inputs)
-        self.retriever.callback_manager.on_chain_start(
-            {"name": self.retriever.__class__.__name__},
-            inputs,
-            verbose=self.retriever.verbose,
-        )
-        try:
-            outputs = self.retriever._call(inputs)
-            # add the sources to the 'answer' value
-            outputs['answer'] = outputs['answer'].replace('\n', ' ') + ' - sources: ' + outputs['sources']
-        except (KeyboardInterrupt, Exception) as e:
-            self.retriever.callback_manager.on_chain_error(e, verbose=self.retriever.verbose)
-            raise e
-        self.retriever.callback_manager.on_chain_end(outputs, verbose=self.retriever.verbose)
-        return self.retriever.prep_outputs(inputs, outputs, return_only_outputs)
