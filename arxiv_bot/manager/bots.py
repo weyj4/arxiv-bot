@@ -124,6 +124,7 @@ class ArxivGraphScraperTool(BaseTool):
         "or 'download chunks.'"
     )
     description = "Use this tool if the human says 'Create a graph' and passes an ArXiv paper with an ID like 1706.03762"
+    memory: Any = None
     extractor: Any = None
     text_splitter: Any = None
     levels: int = 3
@@ -136,6 +137,7 @@ class ArxivGraphScraperTool(BaseTool):
         try:
             ags = ags = ArxivGraphScraper(
                 paper_id=query,
+                memory=self.memory,
                 extractor=self.extractor,
                 text_splitter=self.text_splitter,
                 levels=self.levels,
@@ -253,6 +255,7 @@ class Arxiver:
         article_add_tool.memory = self.memory
         # initialize graph scraper tool
         ags = ArxivGraphScraperTool()
+        ags.memory = self.memory
         ags.extractor = self.extractor
         ags.text_splitter = self.text_splitter
         # append to tools list

@@ -380,6 +380,7 @@ class ArxivGraphScraper:
     def __init__(
         self,
         paper_id: str,
+        memory: Any,
         extractor: Any,
         text_splitter: Any,
         levels: int = 3,
@@ -405,12 +406,13 @@ class ArxivGraphScraper:
         if not os.path.exists(self.save_location):
             os.mkdir(self.save_location)
         # save objects required for ref extraction
+        self.memory = memory
         self.extractor = extractor
         self.text_splitter = text_splitter
 
     def create_graph(self):
         ids = [self.paper_id]
-        for level in tqdm(range(self.levels)):
+        for _ in tqdm(range(self.levels)):
             ids = self._build_papers(ids)
         # set logging level
         if self.verbose:
@@ -436,13 +438,25 @@ class ArxivGraphScraper:
         print(f"Loading '{paper_id}'")
         paper = Arxiv(paper_id)
         paper.load()
-        paper.get_meta()
+        paper_metadata = paper.get_meta()
         # get references
         refs = paper.get_refs(
             extractor=self.extractor,
             text_splitter=self.text_splitter
         )
         paper.chunker()
+        ids = []
+        texts = []
+        metadatas = []
+        for record in paper.dataset:
+            record = {**record, **paper_metadata}
+            ids.append(f"{record['id']}-{record['chunk-id']}")
+            texts.append(record['chunk'])
+            for feature in ['id', 'chunk-id', 'summary', 'authors', 'comment', 'categories', 'journal_ref', 'references', 'doi', 'chunk']:
+                record.pop(feature)
+            metadatas.append(record)
+        # add to the database
+        self.memory.add(texts, ids=ids, metadata=metadatas)
         paper.save_chunks(include_metadata=True, path=self.save_location)
         return paper
     
