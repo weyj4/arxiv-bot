@@ -399,16 +399,21 @@ class ArxivGraphScraper:
         self.paper_id = paper_id
         self.levels = levels
         self.save_location = save_location
+        self.verbose = verbose
+        self.levels = levels
+
         if not os.path.exists(self.save_location):
             os.mkdir(self.save_location)
         # save objects required for ref extraction
         self.extractor = extractor
         self.text_splitter = text_splitter
-        ids = [paper_id]
-        for level in tqdm(range(levels)):
+
+    def create_graph(self):
+        ids = [self.paper_id]
+        for level in tqdm(range(self.levels)):
             ids = self._build_papers(ids)
         # set logging level
-        if verbose:
+        if self.verbose:
             logging.basicConfig(
                 format='[%(filename)s:%(lineno)d] %(message)s',
                 level=logging.DEBUG

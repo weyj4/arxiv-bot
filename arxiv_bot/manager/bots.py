@@ -10,12 +10,19 @@ from langchain.chains.conversation.memory import ConversationBufferWindowMemory
 from arxiv_bot import templates
 from arxiv_bot.knowledge_base.database import Pinecone
 from arxiv_bot.knowledge_base.constructors import Arxiv, init_extractor, get_paper_id
+from arxiv_bot.knowledge_base.constructors import ArxivGraphScraper
 
 paper_id_re = re.compile(r'(\d{4}\.\d{4,6})')
 
 class AddArticleTool(BaseTool):
     name = "Add to ArXiv DB"
-    description = "use this tool to add a new paper to the ArXiv DB. If human provides ArXiv ID like 1012.1313 pass this to the tool. Otherwise try and use the human's query."
+    description = (
+        "use this tool to add a new paper to the ArXiv DB. If human "
+        "provides ArXiv ID like 1012.1313 and does not mention references "
+        "or building a graph, pass this to the tool. If the human specifies "
+        "building a graph with references, use the ArxivGraphScraperTool "
+        "instead. Otherwise try and use the human's query."
+    )
     memory: Any = None
 
     def _run(self, query: str) -> str:
@@ -70,9 +77,10 @@ class ArxivDBTool(BaseTool):
     description = (
         "Use this tool when searching for scientific research information "
         "from our prebuilt ArXiv papers database. This should be the first "
-        "option when looking for information. When recieving information from "
-        "this tool you MUST always include all sources of information."
+        "option when looking for information. "
+        "When receiving information from this tool you MUST always include all sources of information."
     )
+    # description = "don't use this tool."
     retriever: Any = None
 
     def _run(self, inputs:  Union[Dict[str, Any], Any], return_only_outputs: bool = True) -> Dict[str, Any]:
@@ -106,6 +114,41 @@ class ArxivDBTool(BaseTool):
 
     def _arun(self, query: str) -> str:
         raise NotImplementedError("ArxivDBTool does not support async")        
+    
+
+class ArxivGraphScraperTool(BaseTool):
+    name = "Create Graph from ArXiv Paper"
+    description = (
+        "Use this tool to create a graph of a paper's references and "
+        "download chunks. Use this tool if the human says 'create a graph' "
+        "or 'download chunks.'"
+    )
+    description = "Use this tool if the human says 'Create a graph' and passes an ArXiv paper with an ID like 1706.03762"
+    extractor: Any = None
+    text_splitter: Any = None
+    levels: int = 3
+    save_location: str = 'chunks'
+
+    def _run(self, query: str) -> str:
+        # """Function to be used for adding articles to the ArXiv database it expects
+        # an arXiv ID as input and will add the article plus its references to the database.
+        # """
+        try:
+            ags = ags = ArxivGraphScraper(
+                paper_id=query,
+                extractor=self.extractor,
+                text_splitter=self.text_splitter,
+                levels=self.levels,
+                save_location=self.save_location,
+                verbose=True
+            )
+            ags.create_graph()
+        except:
+            pass
+        return f"Added {query} and its references to the chunks directory."
+
+    def _arun(self, query: str) -> str:
+        raise NotImplementedError("ArxivGraphScraperTool does not support async")
 
 
 class Arxiver:
@@ -137,11 +180,11 @@ class Arxiver:
             pinecone_api_key=pinecone_api_key,
             pinecone_environment=pinecone_environment
         )
+        self._init_splitter()
         # initialize the chatbot
         self._init_tools()
         self._init_chatbot(verbose=verbose)
         # initialize the extraction tooling
-        self._init_splitter()
 
     def __call__(self, text: str, detailed: bool = False) -> dict:
         response = self.agent(text)
@@ -208,9 +251,14 @@ class Arxiver:
         # initialize add article tool
         article_add_tool = AddArticleTool()
         article_add_tool.memory = self.memory
+        # initialize graph scraper tool
+        ags = ArxivGraphScraperTool()
+        ags.extractor = self.extractor
+        ags.text_splitter = self.text_splitter
         # append to tools list
         self.tools.append(arxiv_db_tool)
         self.tools.append(article_add_tool)
+        self.tools.append(ags)
 
     def _init_chatbot(self, verbose: bool = False):
         # initialize conversational memory
